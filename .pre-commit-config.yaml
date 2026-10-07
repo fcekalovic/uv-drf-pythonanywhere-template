@@ -1,0 +1,18 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.10
+    hooks:
+      - id: ruff
+        name: ruff lint (fix)
+        args: [--fix]
+      - id: ruff-format
+        name: ruff format
+
+  - repo: local
+    hooks:
+      - id: uv-export-requirements
+        name: sync requirements.txt from uv.lock
+        entry: uv export --no-dev --frozen --format requirements-txt -o requirements.txt
+        language: system
+        pass_filenames: false
+        files: ^(uv\.lock|pyproject\.toml)$

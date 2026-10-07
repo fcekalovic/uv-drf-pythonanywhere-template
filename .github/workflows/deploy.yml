@@ -1,0 +1,86 @@
+name: Deploy
+
+# Manual deploy for PythonAnywhere (free tier: no SSH, no cron).
+#
+# This workflow is MANUAL ONLY: it never runs on push. Trigger it from the
+# GitHub UI (Actions tab -> Deploy -> "Run workflow"). Deploys are restricted
+# to the `main` branch only; selecting any other branch fails fast and
+# performs no deploy or reload.
+#
+# When run, the workflow:
+#   1. POSTs to the app's /deploy/ endpoint, which runs `git pull --ff-only`
+#      and `migrate` on the server and returns a per-step JSON report.
+#   2. Calls the PythonAnywhere API to reload the web app so the new code
+#      is served (the app cannot reload itself mid-request).
+#
+# Required repository secrets:
+#   DEPLOY_URL     Full URL of the deploy endpoint, e.g.
+#                  https://<domain>/deploy/
+#   DEPLOY_TOKEN   Shared secret matching the app's DEPLOY_TOKEN env var.
+#   PA_USERNAME    PythonAnywhere username.
+#   PA_DOMAIN      Web app domain, e.g. <username>.pythonanywhere.com
+#   PA_API_TOKEN   PythonAnywhere API token (Account -> API Token tab).
+
+on:
+  # Manual trigger only. No `push` trigger: deploys are never automatic.
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Hard guard: only the `main` branch may be deployed. Even though the
+    # "Run workflow" button lets a user pick any branch, this job is skipped
+    # for any ref other than refs/heads/main.
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Verify branch is main
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF:-}" != "refs/heads/main" ]; then
+            echo "Refusing to deploy: only the 'main' branch is allowed." >&2
+            echo "Selected ref was '${GITHUB_REF:-<unset>}'." >&2
+            exit 1
+          fi
+          echo "Branch check passed: deploying from main."
+
+      - name: Trigger deploy (git pull + migrate)
+        env:
+          DEPLOY_URL: ${{ secrets.DEPLOY_URL }}
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+        run: |
+          set -euo pipefail
+          http_code=$(curl --fail-with-body --silent --show-error \
+            --output /tmp/deploy_response.json \
+            --write-out '%{http_code}' \
+            --request POST "$DEPLOY_URL" \
+            --header "X-Deploy-Token: $DEPLOY_TOKEN") || {
+              echo "Deploy request failed (HTTP ${http_code:-000}):"
+              cat /tmp/deploy_response.json || true
+              exit 1
+            }
+          echo "Deploy endpoint responded HTTP $http_code:"
+          cat /tmp/deploy_response.json
+
+      - name: Reload web app (PythonAnywhere API)
+        env:
+          PA_USERNAME: ${{ secrets.PA_USERNAME }}
+          PA_DOMAIN: ${{ secrets.PA_DOMAIN }}
+          PA_API_TOKEN: ${{ secrets.PA_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          reload_url="https://www.pythonanywhere.com/api/v0/user/${PA_USERNAME}/webapps/${PA_DOMAIN}/reload/"
+          http_code=$(curl --silent --show-error \
+            --output /tmp/reload_response.json \
+            --write-out '%{http_code}' \
+            --request POST "$reload_url" \
+            --header "Authorization: Token $PA_API_TOKEN")
+          echo "Reload API responded HTTP $http_code:"
+          cat /tmp/reload_response.json || true
+          if [ "$http_code" != "200" ]; then
+            echo "Reload failed."
+            exit 1
+          fi
